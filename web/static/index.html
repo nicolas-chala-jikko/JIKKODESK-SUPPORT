@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>Zendesk Clone - Silin</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;font-family:system-ui;background:#f5f5f5}header{background:#03363d;color:#fff;padding:12px 20px;display:flex;justify-content:space-between}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:10px 12px;border-top:1px solid #eee;text-align:left}thead{background:#f8f9f9}.badge{padding:2px 8px;border-radius:12px;font-size:12px;border:1px solid #ddd}</style>
+</head><body>
+<header><b>Zendesk Clone — Silin</b><span style="font-size:12px;opacity:.8">4863 tickets · Réplica con nombres · API http://localhost:8000/docs</span></header>
+<div style="max-width:1200px;margin:20px auto;background:#fff;border-radius:8;box-shadow:0 1px 3px rgba(0,0,0,.1)">
+<div style="padding:16px 20px;border-bottom:1px solid #eee;display:flex;gap:10;align-items:center"><h2 style="margin:0;flex:1">Vistas · agent/home/tickets</h2>
+<select id="status"><option value="">Todas</option><option value="open">Abiertos</option><option value="pending">Pendientes</option><option value="solved">Resueltos</option><option value="closed">Cerrados</option><option value="new">Nuevos</option></select>
+<button id="reload" style="padding:6px 12px;background:#03363d;color:#fff;border:none;border-radius:6;cursor:pointer">Actualizar</button></div>
+<table><thead><tr><th>ID</th><th>Asunto</th><th>Estado</th><th>Prioridad</th><th>Solicitante</th><th>Asignado</th><th>Actualizado</th></tr></thead><tbody id="tbody"><tr><td colspan=7 style="text-align:center;padding:40px">Cargando...</td></tr></tbody></table>
+<div style="padding:12px 20px;background:#f8f9f9;font-size:12px;color:#666;display:flex;justify-content:space-between"><span id="info"></span><a href="http://localhost:8000/docs" target="_blank">Swagger →</a></div>
+</div>
+<script>
+const API = location.hostname==="localhost" ? "http://localhost:8000" : "";
+async function load(){
+  const s=document.getElementById('status').value;
+  const url=s?`${API}/api/v2/tickets.json?status=${s}&per_page=25`:`${API}/api/v2/tickets.json?per_page=25`;
+  const r=await fetch(url); const j=await r.json();
+  const tb=document.getElementById('tbody');
+  tb.innerHTML=j.tickets.map(t=>`<tr><td>#${t.id}</td><td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(t.subject||'').replace(/"/g,'&quot;')}">${t.subject||'(sin asunto)'}</td><td><span class=badge>${t.status}</span></td><td>${t.priority||'-'}</td><td><div style="font-weight:500">${t.requester_name||'#'+t.requester_id}</div><div style="font-size:11px;color:#666">${t.requester_email||''}</div></td><td>${t.assignee_name|| (t.assignee_id?'#'+t.assignee_id:'-')}<div style="font-size:11px;color:#666">${t.group_name||''}</div></td><td style="font-size:12px;color:#666">${t.updated_at?new Date(t.updated_at).toLocaleString('es-CO'):'-'}</td></tr>`).join('');
+  document.getElementById('info').textContent=`Mostrando ${j.tickets.length} de ${j.count} · /api/v2/tickets.json (nombres)`;
+}
+document.getElementById('reload').onclick=load;
+document.getElementById('status').onchange=load;
+load();
+</script>
+</body></html>

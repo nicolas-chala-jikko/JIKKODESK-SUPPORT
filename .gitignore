@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- JIKKODESK-SUPPORT additions ---
+node_modules/
+dist/
+.vite/
+backups/
+attachments/
+*.db
+*.log
+backup_absolute*.log
+.env
+web-jikko/node_modules/
+

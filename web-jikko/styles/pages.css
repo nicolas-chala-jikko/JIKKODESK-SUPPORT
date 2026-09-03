@@ -1,0 +1,16 @@
+/* Soporte layout */
+.soporte-layout{display:flex;flex:1;overflow:hidden;min-height:0}
+.soporte-views{width:220px;flex-shrink:0;border-right:1px solid var(--line-1);background:var(--bg-1);display:flex;flex-direction:column;overflow:hidden}
+.soporte-views--collapsed{width:48px}
+.soporte-list{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--bg-1)}
+.soporte-filters{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line-1);align-items:center}
+.soporte-card-grid{display:none}
+@media(max-width:768px){
+  .soporte-layout{flex-direction:column}
+  .soporte-views{width:100%;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:1px solid var(--line-1)}
+  .soporte-views .views-list{flex-direction:row}
+  .table-wrap{display:none}
+  .soporte-card-grid{display:flex;flex-direction:column;gap:8px;padding:10px;overflow:auto;flex:1}
+  .soporte-card{border:1px solid var(--line-1);border-radius:10px;padding:10px 12px;background:var(--bg-1)}
+}
+.fullscreen{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column}

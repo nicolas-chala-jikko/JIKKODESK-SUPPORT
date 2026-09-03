@@ -1,4 +1,4 @@
-export const metadata = { title: "Zendesk Clone - Silin", description: "Replica escalable agent workspace" };
+export const metadata = { title: "Jikkodesk Support - Silin", description: "Replica escalable agent workspace" };
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="es">

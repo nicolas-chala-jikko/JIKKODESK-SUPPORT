@@ -14,7 +14,7 @@ from .schemas import TicketOut, UserOut, CursorTickets, TicketCreate
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Zendesk Clone - Silin", version="1.0.0", description="Réplica escalable Zendesk Support - compat /api/v2")
+app = FastAPI(title="Jikkodesk Support - Silin", version="1.0.0", description="Réplica escalable Jikkodesk Support - compat /api/v2")
 
 app.add_middleware(
     CORSMiddleware,

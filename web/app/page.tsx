@@ -24,7 +24,7 @@ export default function Page() {
   return (
     <div>
       <header style={{background:"#03363d", color:"white", padding:"12px 20px", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
-        <b>Zendesk Clone — Silin</b>
+        <b>Jikkodesk Support — Silin</b>
         <span style={{fontSize:12, opacity:0.8}}>4863 tickets · Réplica escalable · http://localhost:8000/docs</span>
       </header>
       <div style={{maxWidth:1200, margin:"20px auto", background:"white", borderRadius:8, boxShadow:"0 1px 3px rgba(0,0,0,0.1)"}}>

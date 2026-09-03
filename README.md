@@ -1,13 +1,13 @@
-# JIKKODESK-SUPPORT — Réplica Zendesk `silin` + Backup Absoluto
+﻿# JIKKODESK-SUPPORT — Réplica Jikkodesk `silin` + Backup Absoluto
 
 **Stack:** `FastAPI` + `PostgreSQL/SQLite` + `Redis` + `Vite 5.4 + React 18` (Jikkoops Soporte) + `Docker` + `Kubernetes`
 
-Réplica funcional de Zendesk Support para `silin.zendesk.com` con backup absoluto `4805/4863` tickets (58 `deleted` excluidos), `17092` hilos, `30747` audits, `33962` ticket_events, `11206` adjuntos `12.33 GB`, `30` Help Center.
+Réplica funcional de Jikkodesk Support para `silin.Jikkodesk.com` con backup absoluto `4805/4863` tickets (58 `deleted` excluidos), `17092` hilos, `30747` audits, `33962` ticket_events, `11206` adjuntos `12.33 GB`, `30` Help Center.
 
 ## Estructura
 ```
 JIKKODESK-SUPPORT/
-  api/                 # FastAPI — /api/v2/* compat Zendesk + cursor incremental
+  api/                 # FastAPI — /api/v2/* compat Jikkodesk + cursor incremental
     app/main.py        # enrich_ticket (requester_name/email), comments/audits enriquecidos, PUT clasificación, GET /attachments
     app/models.py      # Ticket, User, Organization, Group, TicketField (113)
     app/schemas.py     # TicketOut con custom_fields_enriched
@@ -29,7 +29,7 @@ cd api && py -u -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 docker-compose up --build
 
 # Seed con backup absoluto (si tienes backups/.../json)
-py scripts/etl_map_legacy.py  # mapea 778 custom_fields + actualiza zendesk_clone.db
+py scripts/etl_map_legacy.py  # mapea 778 custom_fields + actualiza Jikkodesk_clone.db
 
 # Web Jikko
 cd web-jikko && npm install && npm run dev -- --host 0.0.0.0 --port 5173
@@ -37,11 +37,11 @@ cd web-jikko && npm install && npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 ## Backup Absoluto
-- `zendesk-backup-silin/backups/2026-09-02_FULL_.../json/tickets.json` 86 MB `4863`, `users 1209`, `organizations 61`, `groups 5`, `ticket_fields 113`
+- `Jikkodesk-backup-silin/backups/2026-09-02_FULL_.../json/tickets.json` 86 MB `4863`, `users 1209`, `organizations 61`, `groups 5`, `ticket_fields 113`
 - `json/comments/ 4805` + `audits/ 4805` + `attachments/ 11206` + `ticket_events.json` `help_center_articles.json`
-- Scripts `backup_zendesk.py` (incremental cursor) + `backup_absolute.py` (hilos + audits + adjuntos, reanudable)
+- Scripts `backup_Jikkodesk.py` (incremental cursor) + `backup_absolute.py` (hilos + audits + adjuntos, reanudable)
 
-## API Endpoints (compat Zendesk)
+## API Endpoints (compat Jikkodesk)
 - `GET /api/v2/tickets.json` + `GET /api/v2/tickets/{id}.json` (enrich_ticket)
 - `GET /api/v2/tickets/{id}/comments.json` / `audits.json` (enrich author_name)
 - `PUT /api/v2/tickets/{id}.json` (subject,status,priority,group_id,tags,custom_fields)

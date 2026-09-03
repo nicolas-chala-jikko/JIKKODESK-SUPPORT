@@ -82,7 +82,7 @@ export default function App(){
       <aside className="sidebar" style={{width:260, background:'var(--surface)', borderRight:'1px solid var(--line-1)', display:'flex', flexDirection:'column'}}>
         <div style={{height:52, display:'flex', alignItems:'center', padding:'0 16px', borderBottom:'1px solid var(--line-1)', gap:8}}>
           <div style={{width:28,height:28, background:'var(--accent)', color:'#fff', display:'grid', placeItems:'center', borderRadius:6, fontWeight:700}}>Z</div>
-          <b>Zendesk Clone</b><span style={{fontSize:11, opacity:.6}}>silin</span>
+          <b>Jikkodesk Support</b><span style={{fontSize:11, opacity:.6}}>silin</span>
         </div>
         <nav style={{padding:12, flex:1, overflow:'auto'}}>
           <div className="mono" style={{fontSize:10, opacity:.6, margin:'8px 0 6px'}}>VISTAS</div>

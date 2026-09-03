@@ -146,6 +146,71 @@ def get_ticket_comments(ticket_id: int, db: Session = Depends(get_db)):
         # también via para mostrar canal
     return data
 
+@app.post("/api/v2/tickets/{ticket_id}/comments.json")
+def create_comment(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    # Payload: {"comment": {"body": "...", "public": true/false, "author_id": 123}} o {"body": "...", "public": true}
+    import pathlib, json as js
+    t = db.query(Ticket).filter(Ticket.id==ticket_id).first()
+    if not t:
+        raise HTTPException(404, "ticket not found")
+    data = payload.get("comment", payload)
+    body = data.get("body") or data.get("html_body") or ""
+    if not body or not body.strip():
+        raise HTTPException(400, "body requerido")
+    public = data.get("public", True)
+    # author: usa me (primer admin) si no se pasa
+    author_id = data.get("author_id")
+    if not author_id:
+        me = db.query(User).filter(User.role=="admin").first() or db.query(User).first()
+        author_id = me.id if me else 12148510564365
+    new_comment = {
+        "id": int(time.time()*1000) % 2147483647,
+        "type": "Comment",
+        "author_id": author_id,
+        "body": body,
+        "html_body": f"<p>{body}</p>",
+        "plain_body": body,
+        "public": public,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+        "attachments": data.get("attachments", []),
+        "via": {"channel": "web", "source": {"from": {"id": author_id}}},
+        "metadata": {"system": {"client": "Jikkodesk Support"}}
+    }
+    # guardar en backup json/comments/{id}.json (append)
+    backup_base = pathlib.Path(__file__).parent.parent.parent.parent / "zendesk-backup-silin" / "backups"
+    candidates = sorted(backup_base.glob("*_FULL_*")) if backup_base.exists() else []
+    if candidates:
+        c_path = candidates[-1] / "json" / "comments" / f"{ticket_id}.json"
+        c_path.parent.mkdir(parents=True, exist_ok=True)
+        if c_path.exists():
+            try:
+                existing = js.loads(c_path.read_text(encoding="utf-8"))
+                comments = existing.get("comments", [])
+                comments.append(new_comment)
+                existing["comments"] = comments
+                existing["count"] = len(comments)
+                c_path.write_text(js.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            except:
+                c_path.write_text(js.dumps({"comments": [new_comment], "count": 1, "ticket_id": ticket_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            c_path.write_text(js.dumps({"comments": [new_comment], "count": 1, "ticket_id": ticket_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+    # actualizar ticket updated_at y raw
+    t.updated_at = datetime.now(timezone.utc)
+    if isinstance(t.raw, dict):
+        t.raw["updated_at"] = t.updated_at.isoformat()
+    db.commit()
+    # enriquecer author
+    info = enrich_user(db, author_id)
+    if info:
+        new_comment["author_name"] = info["name"]
+        new_comment["author_email"] = info["email"]
+        new_comment["author_role"] = info.get("role","")
+    # si es público y tiene To/Cc, aquí se enviaría email (stub log)
+    if public and data.get("to_emails"):
+        # log para validar que llegó To/Cc
+        print(f"[EMAIL] Ticket {ticket_id} public comment to {data.get('to_emails')} cc {data.get('cc_emails')} body {body[:80]}")
+    return {"comment": new_comment, "audit": {"author_id": author_id}}
+
 @app.get("/api/v2/tickets/{ticket_id}/audits.json")
 def get_ticket_audits(ticket_id: int, db: Session = Depends(get_db)):
     import pathlib, json

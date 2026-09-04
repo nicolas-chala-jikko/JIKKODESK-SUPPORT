@@ -16,6 +16,12 @@ export default function App(){
   const [editVals, setEditVals]=useState({})
   const [groups, setGroups]=useState([])
   const [saving, setSaving]=useState(false)
+  const [replyBody, setReplyBody]=useState('')
+  const [toEmails, setToEmails]=useState('')
+  const [ccEmails, setCcEmails]=useState('')
+  const [sending, setSending]=useState(false)
+  const [ticketFields, setTicketFields]=useState([])
+  const [customVals, setCustomVals]=useState({})
 
   const load = async (s=q, query='')=>{
     setLoading(true)
@@ -32,12 +38,19 @@ export default function App(){
     setCount(j.count||0)
     setLoading(false)
   }
-  useEffect(()=>{ load(); fetch(`${API}/api/v2/groups.json`).then(r=>r.json()).then(j=>setGroups(j.groups||[])).catch(()=>{}) },[])
+  useEffect(()=>{ load(); fetch(`${API}/api/v2/groups.json`).then(r=>r.json()).then(j=>setGroups(j.groups||[])).catch(()=>{}); fetch(`${API}/api/v2/ticket_fields.json`).then(r=>r.json()).then(j=>setTicketFields(j.ticket_fields||[])).catch(()=>{}) },[])
 
   const openTicket = async (t)=>{
     setSelected(t)
     setEditing(null)
     setEditVals({subject: t.subject, status: t.status, priority: t.priority||'normal', group_id: t.group_id||'', tags: (t.tags||[]).join(', ')})
+    // cargar custom_fields a estado para 10 dropdowns
+    const cfMap={}
+    ;(t.custom_fields||[]).forEach(cf=>{ cfMap[cf.id]=cf.value })
+    setCustomVals(cfMap)
+    setReplyBody('')
+    setToEmails(t.requester_email||'')
+    setCcEmails('')
     const [c,a] = await Promise.all([
       fetch(`${API}/api/v2/tickets/${t.id}/comments.json`).then(r=>r.json()).catch(()=>({comments:[]})),
       fetch(`${API}/api/v2/tickets/${t.id}/audits.json`).then(r=>r.json()).catch(()=>({audits:[]}))
@@ -45,6 +58,36 @@ export default function App(){
     setComments(c.comments||[])
     setAudits(a.audits||[])
   }
+
+  const sendReply = async (isPublic)=>{
+    if(!selected || !replyBody.trim()){ alert('Escribe un mensaje'); return }
+    setSending(true)
+    try{
+      const payload={comment:{body: replyBody, public: isPublic, to_emails: toEmails.split(',').map(s=>s.trim()).filter(Boolean), cc_emails: ccEmails.split(',').map(s=>s.trim()).filter(Boolean)}}
+      const r=await fetch(`${API}/api/v2/tickets/${selected.id}/comments.json`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+      if(r.ok){
+        const j=await r.json()
+        setComments(prev=>[...prev, j.comment])
+        setReplyBody('')
+        // actualizar updated_at en ticket
+        const t=await fetch(`${API}/api/v2/tickets/${selected.id}.json`).then(r=>r.json()).then(j=>j.ticket).catch(()=>null)
+        if(t) setSelected(t)
+      } else {
+        const txt=await r.text(); alert('Error '+r.status+': '+txt)
+      }
+    } catch(e){ alert('Error '+e) }
+    setSending(false)
+  }
+
+  const fieldIds = [41302403884557,11622270573837,35139407697805,12491763418637,11588515928205,11588303168525,38276732136461,30920328139405,11749979171469,11393617430669,30598614640397]
+  const getField = (id)=> ticketFields.find(f=>f.id===id)
+  const getOptions = (id)=> {
+    const f=getField(id)
+    if(!f) return []
+    return f.custom_field_options|| f.system_field_options || []
+  }
+  // dependencias Entidad->Tributo etc: filtrar por co-ocurrencia simple (si Entidad seleccionada, filtrar Tributo a los que co-ocurren en historial - por ahora muestra todos)
+  const isNoTarjeta = (id)=> id===30598614640397
 
   const saveClassification = async ()=>{
     if(!selected) return
@@ -191,20 +234,50 @@ export default function App(){
                 {editing==='classification' && <button className="btn btn--icon" onClick={()=>setEditing(null)}><Icon name="x" size={12}/></button>}
               </div>
               {editing==='classification' ? (
-                <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8, marginTop:8}}>
+                <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginTop:8}}>
+                  <input value={editVals.subject} onChange={e=>setEditVals({...editVals, subject:e.target.value})} className="input" placeholder="Asunto" style={{gridColumn:'1 / span 2'}}/>
                   <select value={editVals.status} onChange={e=>setEditVals({...editVals, status:e.target.value})} className="input"><option value="new">new</option><option value="open">open</option><option value="pending">pending</option><option value="solved">solved</option><option value="closed">closed</option></select>
                   <select value={editVals.priority} onChange={e=>setEditVals({...editVals, priority:e.target.value})} className="input"><option value="low">low</option><option value="normal">normal</option><option value="high">high</option><option value="urgent">urgent</option></select>
                   <select value={editVals.group_id} onChange={e=>setEditVals({...editVals, group_id:e.target.value})} className="input"><option value="">Sin grupo</option>{groups.map(g=>(<option key={g.id} value={g.id}>{g.name}</option>))}</select>
-                  <input value={editVals.tags} onChange={e=>setEditVals({...editVals, tags:e.target.value})} className="input" placeholder="tags, separados por coma" style={{gridColumn:'1 / span 3'}}/>
-                  <div style={{gridColumn:'1 / span 3', display:'flex', gap:6, justifyContent:'flex-end'}}>
+                  <input value={editVals.tags} onChange={e=>setEditVals({...editVals, tags:e.target.value})} className="input" placeholder="tags, separados por coma" style={{gridColumn:'1 / span 2'}}/>
+                  {/* 10 dropdowns clasificación + No-Tarjeta */}
+                  {fieldIds.map(fid=>{
+                    const f=getField(fid)
+                    if(!f) return null
+                    const opts=getOptions(fid)
+                    const isText=isNoTarjeta(fid)
+                    return (
+                      <div key={fid} style={{display:'flex', flexDirection:'column', gap:4}}>
+                        <span className="mono" style={{fontSize:10, color:'var(--ink-3)', textTransform:'uppercase'}}>{f.title}</span>
+                        {isText ? (
+                          <input value={customVals[fid]||''} onChange={e=>setCustomVals({...customVals, [fid]: e.target.value})} className="input" placeholder={f.title}/>
+                        ) : (
+                          <select value={customVals[fid]||''} onChange={e=>setCustomVals({...customVals, [fid]: e.target.value})} className="input">
+                            <option value="">— {f.title} —</option>
+                            {opts.map(opt=>(<option key={opt.value} value={opt.value}>{opt.name}</option>))}
+                          </select>
+                        )}
+                      </div>
+                    )
+                  })}
+                  <div style={{gridColumn:'1 / span 2', display:'flex', gap:6, justifyContent:'flex-end', marginTop:4}}>
                     <button className="btn" onClick={()=>setEditing(null)}>Cancelar</button>
-                    <button className="btn btn--primary" onClick={saveClassification} disabled={saving}>{saving?'Guardando...':'Guardar'}</button>
+                    <button className="btn btn--primary" onClick={async ()=>{
+                      // guardar custom_fields 10 dropdowns
+                      const cfs=Object.entries(customVals).filter(([k,v])=>v!=='' && v!=null).map(([k,v])=>({id: parseInt(k), value: v}))
+                      const payload={ticket:{subject: editVals.subject, status: editVals.status, priority: editVals.priority, group_id: editVals.group_id? parseInt(editVals.group_id):null, tags: editVals.tags? editVals.tags.split(',').map(s=>s.trim()).filter(Boolean):[], custom_fields: cfs}}
+                      setSaving(true)
+                      try{
+                        const r=await fetch(`${API}/api/v2/tickets/${selected.id}.json`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+                        if(r.ok){ const j=await r.json(); setSelected(j.ticket); setTickets(prev=>prev.map(x=>x.id===j.ticket.id? j.ticket: x)); setEditing(null); const a=await fetch(`${API}/api/v2/tickets/${j.ticket.id}/audits.json`).then(r=>r.json()).catch(()=>({audits:[]})); setAudits(a.audits||[]) } else alert('Error '+r.status)
+                      }catch(e){ alert(e)} setSaving(false)
+                    }} disabled={saving}>{saving?'Guardando...':'Guardar'}</button>
                   </div>
                 </div>
               ) : (
                 <div className="mono" style={{fontSize:11, color:'var(--ink-3)', marginTop:4, display:'flex', alignItems:'center', gap:6, flexWrap:'wrap'}}>
-                  <span>{selected.tags?.join(' • ') || 'sin tags'}</span><span>•</span><span>{selected.group_name|| selected.group_id || 'sin grupo'}</span><span>•</span><span>{selected.priority||'-'}</span><span>•</span><span>{selected.updated_at? new Date(selected.updated_at).toLocaleString('es-CO'):''}</span>
-                  <span style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:4}}><Icon name="pencil" size={12}/> Clasificación</span>
+                  <span>{selected.tags?.join(' • ') || 'sin tags'}</span><span>•</span><span>{selected.group_name|| selected.group_id || 'sin grupo'}</span><span>•</span><span>{selected.priority||'-'}</span><span>•</span><span>{(selected.custom_fields_enriched||[]).slice(0,3).map(cf=>`${cf.title}: ${cf.value_name||cf.value||''}`).join(' • ')}</span><span>•</span><span>{selected.updated_at? new Date(selected.updated_at).toLocaleString('es-CO'):''}</span>
+                  <span style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:4}}><Icon name="pencil" size={12}/> Clasificación (10+No-Tarjeta)</span>
                 </div>
               )}
             </div>
@@ -240,7 +313,9 @@ export default function App(){
                           <div style={{marginTop:8, display:'flex', flexDirection:'column', gap:8}}>
                             {c.attachments.map(att=>{
                               const img = isImage(att.file_name, att.content_type)
-                              const localUrl = `${API}/attachments/${selected.id}/${att.id}_${att.file_name.replace(/[<>:"/\\|?*]/g,'_')}`
+                              const attId = att.id && String(att.id) !== 'undefined' ? att.id : ''
+                              const sanitized = att.file_name.replace(/[<>:"/\\|?*]/g,'_')
+                              const localUrl = attId ? `${API}/attachments/${selected.id}/${attId}_${sanitized}` : `${API}/attachments/${selected.id}/${sanitized}`
                               // fallback a content_url si local no existe (para 4 fails con :)
                               return (
                                 <div key={att.id} style={{border:'1px solid var(--line-1)', borderRadius:8, overflow:'hidden', background:'var(--surface)'}}>
@@ -263,11 +338,18 @@ export default function App(){
                   {comments.length===0 && <div style={{fontSize:12, color:'var(--ink-3)'}}>Sin hilo aún — backup {selected.id} en progreso si no aparece (4805/4863)</div>}
                 </div>
 
-                <div style={{marginTop:16, display:'flex', gap:6}}>
-                  <textarea placeholder="Responder..." style={{flex:1, minHeight:60, padding:8, border:'1px solid var(--line-1)', borderRadius:8}}/>
-                  <div style={{display:'flex', flexDirection:'column', gap:6}}>
-                    <button className="btn btn--primary">Enviar</button><button className="btn">Nota interna</button>
+                <div style={{marginTop:16, border:'1px solid var(--line-1)', borderRadius:8, padding:10, background:'var(--bg-1)'}}>
+                  <div className="mono" style={{fontSize:11, color:'var(--ink-3)', marginBottom:6, display:'flex', alignItems:'center', gap:6}}><Icon name="mail" size={12}/> Responder — correos separados por coma</div>
+                  <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8}}>
+                    <input value={toEmails} onChange={e=>setToEmails(e.target.value)} className="input" placeholder="Para (To) — ej. cliente@correo.com"/>
+                    <input value={ccEmails} onChange={e=>setCcEmails(e.target.value)} className="input" placeholder="CC — ej. otro@correo.com"/>
                   </div>
+                  <textarea value={replyBody} onChange={e=>setReplyBody(e.target.value)} placeholder="Escribe tu respuesta... aparecerá en historial como en Zendesk" style={{width:'100%', minHeight:80, padding:8, border:'1px solid var(--line-1)', borderRadius:8, resize:'vertical'}}/>
+                  <div style={{display:'flex', gap:6, marginTop:8, justifyContent:'flex-end'}}>
+                    <button className="btn" onClick={()=>sendReply(false)} disabled={sending || !replyBody.trim()} style={{opacity: sending||!replyBody.trim()?0.6:1}}>{sending?'Enviando...':'Nota interna'}</button>
+                    <button className="btn btn--primary" onClick={()=>sendReply(true)} disabled={sending || !replyBody.trim()} style={{opacity: sending||!replyBody.trim()?0.6:1}}>{sending?'Enviando...':'Enviar (público)'}</button>
+                  </div>
+                  <div className="mono" style={{fontSize:11, color:'var(--ink-3)', marginTop:6}}>Asunto se usa como nombre del ticket (editable arriba con lápiz). Solicitante es {selected.requester_email} — al enviar con <b>Enviar</b> se registra como correo de respuesta a {toEmails||selected.requester_email}.</div>
                 </div>
 
                 <h4 style={{margin:'16px 0 8px'}}>Auditoría — {audits.length} iteraciones</h4>

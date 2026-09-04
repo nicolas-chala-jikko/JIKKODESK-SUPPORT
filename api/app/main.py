@@ -9,6 +9,7 @@ from sqlalchemy import desc, asc
 import pathlib, re
 
 from .database import Base, engine, get_db
+from .config import settings
 from .models import Ticket, User, Organization, Group, Brand, TicketField, Trigger, Automation, Macro, View
 from .schemas import TicketOut, UserOut, CursorTickets, TicketCreate
 
@@ -145,6 +146,93 @@ def get_ticket_comments(ticket_id: int, db: Session = Depends(get_db)):
             c["author_role"] = info.get("role","")
         # también via para mostrar canal
     return data
+
+@app.post("/api/v2/tickets/{ticket_id}/comments.json")
+def create_comment(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    # Payload: {"comment": {"body": "...", "public": true/false, "author_id": 123}} o {"body": "...", "public": true}
+    import pathlib, json as js
+    t = db.query(Ticket).filter(Ticket.id==ticket_id).first()
+    if not t:
+        raise HTTPException(404, "ticket not found")
+    data = payload.get("comment", payload)
+    body = data.get("body") or data.get("html_body") or ""
+    if not body or not body.strip():
+        raise HTTPException(400, "body requerido")
+    public = data.get("public", True)
+    # author: usa me (primer admin) si no se pasa
+    author_id = data.get("author_id")
+    if not author_id:
+        me = db.query(User).filter(User.role=="admin").first() or db.query(User).first()
+        author_id = me.id if me else 12148510564365
+    new_comment = {
+        "id": int(time.time()*1000) % 2147483647,
+        "type": "Comment",
+        "author_id": author_id,
+        "body": body,
+        "html_body": f"<p>{body}</p>",
+        "plain_body": body,
+        "public": public,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00","Z"),
+        "attachments": data.get("attachments", []),
+        "via": {"channel": "web", "source": {"from": {"id": author_id}}},
+        "metadata": {"system": {"client": "Jikkodesk Support"}}
+    }
+    # guardar en backup json/comments/{id}.json (append)
+    backup_base = pathlib.Path(__file__).parent.parent.parent.parent / "zendesk-backup-silin" / "backups"
+    candidates = sorted(backup_base.glob("*_FULL_*")) if backup_base.exists() else []
+    if candidates:
+        c_path = candidates[-1] / "json" / "comments" / f"{ticket_id}.json"
+        c_path.parent.mkdir(parents=True, exist_ok=True)
+        if c_path.exists():
+            try:
+                existing = js.loads(c_path.read_text(encoding="utf-8"))
+                comments = existing.get("comments", [])
+                comments.append(new_comment)
+                existing["comments"] = comments
+                existing["count"] = len(comments)
+                c_path.write_text(js.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            except:
+                c_path.write_text(js.dumps({"comments": [new_comment], "count": 1, "ticket_id": ticket_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            c_path.write_text(js.dumps({"comments": [new_comment], "count": 1, "ticket_id": ticket_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+    # actualizar ticket updated_at y raw
+    t.updated_at = datetime.now(timezone.utc)
+    if isinstance(t.raw, dict):
+        t.raw["updated_at"] = t.updated_at.isoformat()
+    db.commit()
+    # enriquecer author
+    info = enrich_user(db, author_id)
+    if info:
+        new_comment["author_name"] = info["name"]
+        new_comment["author_email"] = info["email"]
+        new_comment["author_role"] = info.get("role","")
+    # si es público y tiene To/Cc, enviar email real vía SMTP en background (no bloquea respuesta, guarda en trazabilidad inmediato)
+    if public:
+        to_emails=data.get("to_emails") or []
+        cc_emails=data.get("cc_emails") or []
+        if not to_emails and t.requester_id:
+            u=db.query(User).filter(User.id==t.requester_id).first()
+            if u and u.email:
+                to_emails=[u.email]
+        if to_emails:
+            # enviar en background thread para no bloquear POST (trazabilidad guarda inmediato, email llega async)
+            import threading
+            # capturar valores primitivos antes de cerrar sesión (evita DetachedInstanceError)
+            subj_val = t.subject or f"Ticket #{ticket_id}"
+            to_list = list(to_emails)
+            cc_list = list(cc_emails)
+            html_val = new_comment.get("html_body")
+            def _send_bg(subj_p=subj_val, to_p=to_list, cc_p=cc_list, html_p=html_val):
+                try:
+                    from .email_send import send_reply
+                    send_reply(ticket_id, subj_p, body, to_p, cc_p, html_body=html_p)
+                except Exception as e:
+                    print(f"[EMAIL-BG] send fail {e}")
+            threading.Thread(target=_send_bg, daemon=True).start()
+            print(f"[EMAIL-BG] encolado Ticket {ticket_id} to {to_list} cc {cc_list}")
+        else:
+            print(f"[EMAIL] Ticket {ticket_id} public comment to {data.get('to_emails')} cc {data.get('cc_emails')} body {body[:80]} (no To, solo historial)")
+    return {"comment": new_comment, "audit": {"author_id": author_id}}
 
 @app.get("/api/v2/tickets/{ticket_id}/audits.json")
 def get_ticket_audits(ticket_id: int, db: Session = Depends(get_db)):
@@ -338,29 +426,196 @@ def list_views(db: Session = Depends(get_db)):
 
 @app.get("/attachments/{ticket_id}/{filename}")
 def serve_attachment(ticket_id: int, filename: str):
-    # Sirve adjuntos locales del backup absoluto (12.3 GB) con sanitización
-    # filename viene como {att_id}_{file_name_sanitizado}
+    # Sirve adjuntos locales del backup absoluto (12.3 GB) con sanitización, maneja undefined_ prefix de ingesta email
+    # filename viene como {att_id}_{file_name_sanitizado} o solo file_name
+    import mimetypes
+    # sanitizar filename para Windows y quitar undefined_ prefix
+    safe_name = filename
+    if safe_name.startswith("undefined_"):
+        safe_name = safe_name[len("undefined_"):]
+    # también quitar prefijo att_id si es "undefined" o no numérico
     backup_base = pathlib.Path(__file__).parent.parent.parent.parent / "zendesk-backup-silin" / "backups"
     candidates = sorted(backup_base.glob("*_FULL_*")) if backup_base.exists() else []
-    # buscar archivo exacto o con prefijo att_id
     for base in candidates:
-        # intentar directo
-        p = base / "attachments" / str(ticket_id) / filename
-        if p.exists():
-            # guess content type por extensión
-            import mimetypes
-            mt, _ = mimetypes.guess_type(str(p))
-            return FileResponse(str(p), media_type=mt or "application/octet-stream", filename=filename)
-        # buscar por att_id prefix si sanitización difiere
         att_dir = base / "attachments" / str(ticket_id)
-        if att_dir.exists():
-            # si filename tiene att_id_ prefix, buscar que termine con sufijo
-            for f in att_dir.glob(f"{filename.split('_')[0]}_*"):
-                if f.name == filename or f.name.endswith(filename.split('_',1)[-1]):
-                    import mimetypes
-                    mt, _ = mimetypes.guess_type(str(f))
-                    return FileResponse(str(f), media_type=mt or "application/octet-stream", filename=f.name)
-    raise HTTPException(404, f"attachment {filename} not found for ticket {ticket_id}")
+        if not att_dir.exists():
+            continue
+        # 1. intentar exacto con safe_name
+        p = att_dir / safe_name
+        if p.exists():
+            mt, _ = mimetypes.guess_type(str(p))
+            return FileResponse(str(p), media_type=mt or "application/octet-stream", filename=safe_name)
+        # 2. intentar con filename original exacto
+        p2 = att_dir / filename
+        if p2.exists():
+            mt, _ = mimetypes.guess_type(str(p2))
+            return FileResponse(str(p2), media_type=mt or "application/octet-stream", filename=filename)
+        # 3. buscar por sufijo file_name sin id (para undefined_...)
+        # extraer sufijo después de primer _
+        suffix = safe_name
+        # también probar sin sanitización: buscar cualquier archivo que termine con file_name original
+        for f in att_dir.iterdir():
+            if f.is_file() and (f.name == safe_name or f.name.endswith(safe_name) or safe_name in f.name or f.name.endswith(filename.split("_",1)[-1] if "_" in filename else filename)):
+                mt, _ = mimetypes.guess_type(str(f))
+                return FileResponse(str(f), media_type=mt or "application/octet-stream", filename=f.name)
+        # 4. fallback por att_id prefix si existe y no es undefined
+        if "_" in filename and not filename.startswith("undefined_"):
+            prefix = filename.split("_")[0]
+            if prefix.isdigit():
+                for f in att_dir.glob(f"{prefix}_*"):
+                    if f.name == filename or f.name.endswith(safe_name):
+                        mt, _ = mimetypes.guess_type(str(f))
+                        return FileResponse(str(f), media_type=mt or "application/octet-stream", filename=f.name)
+    raise HTTPException(404, f"attachment {filename} not found for ticket {ticket_id} (tried {safe_name})")
+
+@app.post("/api/v2/email/mock-ingest")
+def email_mock_ingest(payload: dict, db: Session = Depends(get_db)):
+    """Simula email entrante para validación interna 0 impacto (crea ticket 99999). No requiere IMAP real."""
+    from .email_ingest import mock_ingest
+    from_email=payload.get("from") or payload.get("from_email") or "test@jikkosoft.test"
+    subject=payload.get("subject") or "(sin asunto)"
+    body=payload.get("body") or payload.get("text") or ""
+    to_email=payload.get("to") or settings.EMAIL_FROM
+    tid=mock_ingest(from_email, subject, body, to_email)
+    t=db.query(Ticket).filter(Ticket.id==tid).first()
+    return {"ticket_id": tid, "ticket": enrich_ticket(t, db) if t else None}
+
+@app.post("/api/v2/email/poll")
+def email_poll(db: Session = Depends(get_db)):
+    """Poll IMAP una vez (usa EMAIL_IMAP_* de .env). Seguro, solo UNSEEN."""
+    from .email_ingest import poll_once
+    count=poll_once()
+    return {"ingested": count}
+
+@app.get("/api/v2/email/oauth/login")
+def email_oauth_login():
+    """Redirige a Google OAuth para nicolas.chala@jikkosoft.com"""
+    from urllib.parse import urlencode
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(400, "GOOGLE_CLIENT_ID no configurado en .env")
+    params={
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://mail.google.com/",
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true"
+    }
+    url="https://accounts.google.com/o/oauth2/v2/auth?"+urlencode(params)
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url)
+
+@app.get("/api/v2/email/oauth/callback")
+def email_oauth_callback(code: str = Query(...), db: Session = Depends(get_db)):
+    """Callback OAuth: intercambia code por tokens y guarda refresh_token en .env"""
+    import requests, pathlib
+    data={
+        "code": code,
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "client_secret": settings.GOOGLE_CLIENT_SECRET,
+        "redirect_uri": settings.OAUTH_REDIRECT_URI,
+        "grant_type": "authorization_code"
+    }
+    r=requests.post("https://oauth2.googleapis.com/token", data=data, timeout=15)
+    if r.status_code!=200:
+        raise HTTPException(400, f"OAuth token error {r.status_code}: {r.text}")
+    j=r.json()
+    refresh=j.get("refresh_token")
+    access=j.get("access_token")
+    # guardar en .env
+    env_path=pathlib.Path(__file__).parent.parent / ".env"
+    try:
+        content=env_path.read_text(encoding="utf-8")
+        if "GOOGLE_REFRESH_TOKEN=" in content:
+            content=re.sub(r"GOOGLE_REFRESH_TOKEN=.*", f"GOOGLE_REFRESH_TOKEN={refresh or ''}", content)
+        else:
+            content+=f"\nGOOGLE_REFRESH_TOKEN={refresh or ''}\n"
+        if "GOOGLE_ACCESS_TOKEN=" in content:
+            content=re.sub(r"GOOGLE_ACCESS_TOKEN=.*", f"GOOGLE_ACCESS_TOKEN={access or ''}", content)
+        env_path.write_text(content, encoding="utf-8")
+    except Exception as e:
+        print(f"write .env fail {e}")
+    return {"ok": True, "refresh_token": refresh[:20]+"..." if refresh else None, "access_token": access[:20]+"..." if access else None, "message": "Guarda refresh_token en .env, reinicia API para usar XOAUTH2"}
+
+@app.get("/api/v2/email/test")
+def email_test(db: Session = Depends(get_db)):
+    """Test IMAP/SMTP sin enviar correo real, solo login. Usa XOAUTH2 si hay refresh_token, sino PASS. Fix Python 3.14 Gmail cert."""
+    import imaplib, smtplib, ssl
+    def get_ssl_context():
+        try:
+            return ssl.create_default_context()
+        except:
+            return ssl._create_unverified_context()
+    imap_ok=False
+    smtp_ok=False
+    imap_err=None
+    smtp_err=None
+    # intentar OAuth si hay refresh_token
+    if settings.GOOGLE_REFRESH_TOKEN:
+        try:
+            import requests
+            data={"client_id": settings.GOOGLE_CLIENT_ID, "client_secret": settings.GOOGLE_CLIENT_SECRET, "refresh_token": settings.GOOGLE_REFRESH_TOKEN, "grant_type": "refresh_token"}
+            r=requests.post("https://oauth2.googleapis.com/token", data=data, timeout=10)
+            if r.status_code==200:
+                access=r.json().get("access_token")
+                import base64
+                auth_str=f"user={settings.EMAIL_IMAP_USER}\x01auth=Bearer {access}\x01\x01"
+                auth_b64=base64.b64encode(auth_str.encode()).decode()
+                try:
+                    ctx=get_ssl_context()
+                    M=imaplib.IMAP4_SSL(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT, ssl_context=ctx, timeout=10)
+                except ssl.SSLError:
+                    M=imaplib.IMAP4_SSL(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT, ssl_context=ssl._create_unverified_context(), timeout=10)
+                M.authenticate("XOAUTH2", lambda x: auth_b64)
+                M.logout()
+                imap_ok=True
+            else:
+                imap_err=f"refresh failed {r.text[:200]}"
+        except Exception as e:
+            imap_err=str(e)
+    else:
+        try:
+            try:
+                ctx=get_ssl_context()
+                M=imaplib.IMAP4_SSL(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT, ssl_context=ctx, timeout=10)
+            except ssl.SSLError:
+                M=imaplib.IMAP4_SSL(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT, ssl_context=ssl._create_unverified_context(), timeout=10)
+            M.login(settings.EMAIL_IMAP_USER, settings.EMAIL_IMAP_PASS)
+            M.logout()
+            imap_ok=True
+        except Exception as e:
+            imap_err=str(e)
+    try:
+        try:
+            ctx=get_ssl_context()
+        except:
+            ctx=ssl._create_unverified_context()
+        import smtplib
+        with smtplib.SMTP(settings.EMAIL_SMTP_HOST, settings.EMAIL_SMTP_PORT, timeout=10) as s:
+            s.ehlo()
+            try:
+                s.starttls(context=ctx)
+            except ssl.SSLError:
+                s.starttls(context=ssl._create_unverified_context())
+            if settings.GOOGLE_REFRESH_TOKEN:
+                import base64, requests
+                data={"client_id": settings.GOOGLE_CLIENT_ID, "client_secret": settings.GOOGLE_CLIENT_SECRET, "refresh_token": settings.GOOGLE_REFRESH_TOKEN, "grant_type": "refresh_token"}
+                r=requests.post("https://oauth2.googleapis.com/token", data=data, timeout=10)
+                access=r.json().get("access_token") if r.status_code==200 else None
+                if access:
+                    auth_str=f"user={settings.EMAIL_SMTP_USER}\x01auth=Bearer {access}\x01\x01"
+                    auth_b64=base64.b64encode(auth_str.encode()).decode()
+                    s.docmd("AUTH", "XOAUTH2 " + auth_b64)
+                    smtp_ok=True
+                else:
+                    raise Exception(f"no access_token {r.text[:200]}")
+            else:
+                s.login(settings.EMAIL_SMTP_USER, settings.EMAIL_SMTP_PASS)
+                smtp_ok=True
+    except Exception as e:
+        smtp_err=str(e)
+    return {"imap_ok": imap_ok, "imap_err": imap_err, "smtp_ok": smtp_ok, "smtp_err": smtp_err, "imap_host": settings.EMAIL_IMAP_HOST, "smtp_host": settings.EMAIL_SMTP_HOST, "oauth": bool(settings.GOOGLE_REFRESH_TOKEN)}
 
 @app.get("/api/v2/search.json")
 def search(query: str = Query(..., description="ej: status:open priority:high"), db: Session = Depends(get_db)):
